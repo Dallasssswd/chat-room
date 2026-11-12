@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Private Chat Room</title>
-  <script src="https://unpkg.com"></script>
   <style>
     * {
       box-sizing: border-box;
@@ -141,7 +140,7 @@
   <div class="chat-container">
     <div class="header">
       <h2>Private Chat</h2>
-      <span id="room-status">Checking...</span>
+      <span id="room-status">Ready</span>
     </div>
 
     <div class="login-bar">
@@ -151,7 +150,7 @@
     </div>
 
     <div id="chat-box">
-      <div class="system-msg" id="status-box">Starting up...</div>
+      <div class="system-msg">Enter your name and a room code above, then click Join.</div>
     </div>
 
     <div class="input-bar">
@@ -161,34 +160,18 @@
   </div>
 
   <script>
+    const SUPABASE_URL = 'https://zilpqsqwoxoaewadwfpk.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_FpJe6fT3X_QhPNiCXg6iVQ_sT3VDpuH';
+
     const chatBox = document.getElementById('chat-box');
     const msgInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
     const joinBtn = document.getElementById('join-btn');
     const roomStatus = document.getElementById('room-status');
 
-    // Show any JavaScript errors right on screen
-    window.onerror = function(msg, url, line) {
-      roomStatus.textContent = 'Script Error';
-      chatBox.innerHTML = `<div class="error-msg">Error on line ${line}: ${msg}</div>`;
-    };
-
-    const SUPABASE_URL = 'https://zilpqsqwoxoaewadwfpk.supabase.co';
-    const SUPABASE_KEY = 'sb_publishable_FpJe6fT3X_QhPNiCXg6iVQ_sT3VDpuH';
-
-    let supabaseClient = null;
     let currentRoom = '';
-    let subscription = null;
-
-    // Check if Supabase library loaded properly
-    if (typeof window.supabase === 'undefined') {
-      roomStatus.textContent = 'Blocked';
-      chatBox.innerHTML = '<div class="error-msg">Your school network blocked unpkg.com (the Supabase script).</div>';
-    } else {
-      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-      roomStatus.textContent = 'Ready';
-      chatBox.innerHTML = '<div class="system-msg">Enter your name and a room code above, then click Join.</div>';
-    }
+    let lastMessageId = 0;
+    let pollTimer = null;
 
     joinBtn.addEventListener('click', joinRoom);
     sendBtn.addEventListener('click', sendMessage);
@@ -200,7 +183,6 @@
     });
 
     async function joinRoom() {
-      if (!supabaseClient) return;
       const roomInput = document.getElementById('room-code').value.trim();
       if (!roomInput) {
         alert('Please enter a room code.');
@@ -208,55 +190,73 @@
       }
 
       currentRoom = roomInput;
+      lastMessageId = 0;
+      if (pollTimer) clearInterval(pollTimer);
+
       roomStatus.textContent = 'Connecting...';
       chatBox.innerHTML = '<div class="system-msg">Loading messages...</div>';
 
-      try {
-        const { data, error } = await supabaseClient
-          .from('messages')
-          .select('*')
-          .eq('room_code', currentRoom)
-          .order('created_at', { ascending: true });
-
-        if (error) {
-          roomStatus.textContent = 'DB Error';
-          chatBox.innerHTML = `<div class="error-msg">Supabase Error: ${error.message}</div>`;
-          return;
-        }
-
-        chatBox.innerHTML = '';
-        if (data.length === 0) {
-          chatBox.innerHTML = '<div class="system-msg" id="empty-notice">No messages yet. Say hello!</div>';
-        } else {
-          data.forEach(displayMessage);
-        }
-
+      const ok = await fetchMessages(true);
+      if (ok) {
         msgInput.disabled = false;
         sendBtn.disabled = false;
         roomStatus.textContent = `Room: ${currentRoom}`;
         msgInput.focus();
 
-        if (subscription) {
-          supabaseClient.removeChannel(subscription);
+        // Check for new messages every 2 seconds
+        pollTimer = setInterval(() => fetchMessages(false), 2000);
+      }
+    }
+
+    async function fetchMessages(isInitial) {
+      const encodedRoom = encodeURIComponent(currentRoom);
+      const url = `${SUPABASE_URL}/rest/v1/messages?room_code=eq.${encodedRoom}&id=gt.${lastMessageId}&order=id.asc`;
+
+      try {
+        const res = await fetch(url, {
+          headers: {
+            'apikey': SUPABASE_KEY,
+            'Authorization': `Bearer ${SUPABASE_KEY}`
+          }
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          if (isInitial) {
+            roomStatus.textContent = 'Error';
+            chatBox.innerHTML = `<div class="error-msg">Database Error (${res.status}): ${escapeHTML(errText)}</div>`;
+          }
+          return false;
         }
 
-        subscription = supabaseClient
-          .channel('room-' + currentRoom)
-          .on('postgres_changes', {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'messages',
-            filter: `room_code=eq.${currentRoom}`
-          }, payload => {
-            const emptyNotice = document.getElementById('empty-notice');
-            if (emptyNotice) emptyNotice.remove();
-            displayMessage(payload.new);
-          })
-          .subscribe();
+        const data = await res.json();
 
+        if (isInitial) {
+          chatBox.innerHTML = '';
+          if (data.length === 0) {
+            chatBox.innerHTML = '<div class="system-msg" id="empty-notice">No messages yet. Say hello!</div>';
+          }
+        }
+
+        if (data.length > 0) {
+          const emptyNotice = document.getElementById('empty-notice');
+          if (emptyNotice) emptyNotice.remove();
+
+          data.forEach(msg => {
+            if (msg.id > lastMessageId) {
+              lastMessageId = msg.id;
+              displayMessage(msg);
+            }
+          });
+        }
+
+        return true;
       } catch (err) {
-        roomStatus.textContent = 'Network Error';
-        chatBox.innerHTML = `<div class="error-msg">Network Error: ${err.message} (School Wi-Fi may be blocking supabase.co)</div>`;
+        if (isInitial) {
+          roomStatus.textContent = 'Blocked';
+          chatBox.innerHTML = `<div class="error-msg">Connection failed: Your school Wi-Fi is blocking supabase.co directly.</div>`;
+        }
+        return false;
       }
     }
 
@@ -267,16 +267,38 @@
 
       msgInput.value = '';
 
-      const { error } = await supabaseClient
-        .from('messages')
-        .insert([{
-          room_code: currentRoom,
-          username: username,
-          content: content
-        }]);
+      try {
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'apikey': SUPABASE_KEY,
+            'Authorization': `Bearer ${SUPABASE_KEY}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation'
+          },
+          body: JSON.stringify({
+            room_code: currentRoom,
+            username: username,
+            content: content
+          })
+        });
 
-      if (error) {
-        chatBox.innerHTML += `<div class="error-msg">Send failed: ${error.message}</div>`;
+        if (!res.ok) {
+          const errText = await res.text();
+          chatBox.innerHTML += `<div class="error-msg">Send failed: ${escapeHTML(errText)}</div>`;
+          return;
+        }
+
+        const inserted = await res.json();
+        const emptyNotice = document.getElementById('empty-notice');
+        if (emptyNotice) emptyNotice.remove();
+
+        if (inserted && inserted[0] && inserted[0].id > lastMessageId) {
+          lastMessageId = inserted[0].id;
+          displayMessage(inserted[0]);
+        }
+      } catch (err) {
+        chatBox.innerHTML += `<div class="error-msg">Network error while sending message.</div>`;
       }
     }
 
@@ -312,3 +334,4 @@
   </script>
 </body>
 </html>
+

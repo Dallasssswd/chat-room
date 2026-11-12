@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>P2P Private Chat</title>
+  <!-- Load PeerJS for direct browser-to-browser chat -->
+  <script src="https://unpkg.com"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      background-color: #121212;
+      color: #ffffff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      padding: 15px;
+    }
+    .chat-container {
+      width: 100%;
+      max-width: 550px;
+      background: #1e1e1e;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+      height: 85vh;
+      overflow: hidden;
+    }
+    .header {
+      background: #252526;
+      padding: 15px 20px;
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header h2 {
+      font-size: 1.1rem;
+    }
+    #room-status {
+      font-size: 0.85rem;
+      color: #4ade80;
+    }
+    .setup-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px;
+      background: #252526;
+      border-bottom: 1px solid #333;
+    }
+    input {
+      background: #2d2d2d;
+      border: 1px solid #444;
+      color: #fff;
+      padding: 9px;
+      border-radius: 6px;
+      outline: none;
+      font-size: 0.9rem;
+      flex: 1;
+      min-width: 110px;
+    }
+    input:focus {
+      border-color: #3b82f6;
+    }
+    button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      padding: 9px 14px;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button:hover {
+      background: #2563eb;
+    }
+    button.secondary {
+      background: #10b981;
+    }
+    button.secondary:hover {
+      background: #059669;
+    }
+    #chat-box {
+      flex: 1;
+      padding: 15px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .msg {
+      background: #2a2a2a;
+      padding: 10px 14px;
+      border-radius: 8px;
+      max-width: 85%;
+      word-wrap: break-word;
+      line-height: 1.4;
+    }
+    .msg-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 0.75rem;
+      color: #aaa;
+      margin-bottom: 4px;
+    }
+    .msg-author {
+      font-weight: bold;
+      color: #60a5fa;
+    }
+    .input-bar {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      background: #252526;
+      border-top: 1px solid #333;
+    }
+    .system-msg {
+      text-align: center;
+      color: #888;
+      font-size: 0.85rem;
+      margin: 6px 0;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="chat-container">
+    <div class="header">
+      <h2>P2P Chat Room</h2>
+      <span id="room-status">Offline</span>
+    </div>
+
+    <!-- Setup Controls -->
+    <div class="setup-bar">
+      <input type="text" id="username" placeholder="Your name" maxlength="20" />
+      <button class="secondary" onclick="createRoom()">Create Room</button>
+      <input type="text" id="join-code" placeholder="Enter room code" />
+      <button onclick="joinRoom()">Join</button>
+    </div>
+
+    <!-- Messages Display -->
+    <div id="chat-box">
+      <div class="system-msg">Click "Create Room" to get a code, or enter a friend's code and click "Join".</div>
+    </div>
+
+    <!-- Message Input -->
+    <div class="input-bar">
+      <input type="text" id="message-input" placeholder="Type a message..." disabled />
+      <button id="send-btn" onclick="sendMessage()" disabled>Send</button>
+    </div>
+  </div>
+
+  <script>
+    let peer = null;
+    let connections = []; // Stores all connected peers (for the host)
+    let hostConn = null;  // Stores connection to host (for guests)
+    let isHost = false;
+
+    const chatBox = document.getElementById('chat-box');
+    const msgInput = document.getElementById('message-input');
+    const sendBtn = document.getElementById('send-btn');
+    const roomStatus = document.getElementById('room-status');
+
+    msgInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') sendMessage();
+    });
+
+    // Generate a random 6-character room code
+    function makeCode() {
+      return Math.random().toString(36).substring(2, 8).toUpperCase();
+    }
+
+    // HOST: Create a room
+    function createRoom() {
+      const code = makeCode();
+      isHost = true;
+      roomStatus.textContent = 'Starting...';
+
+      peer = new Peer('chatroom-' + code);
+
+      peer.on('open', () => {
+        roomStatus.textContent = `Room Code: ${code}`;
+        addSystemMessage(`Room created! Share this code with friends: ${code}`);
+        enableChat();
+      });
+
+      // Listen for guests joining
+      peer.on('connection', (conn) => {
+        connections.push(conn);
+        addSystemMessage('Someone joined the room.');
+
+        conn.on('data', (data) => {
+          displayMessage(data.user, data.text);
+          // Relay message to all other connected guests
+          connections.forEach(c => {
+            if (c !== conn && c.open) c.send(data);
+          });
+        });
+
+        conn.on('close', () => {
+          connections = connections.filter(c => c !== conn);
+          addSystemMessage('Someone left the room.');
+        });
+      });
+
+      peer.on('error', (err) => {
+        alert('Connection error: ' + err.type);
+      });
+    }
+
+    // GUEST: Join an existing room
+    function joinRoom() {
+      const code = document.getElementById('join-code').value.trim().toUpperCase();
+      if (!code) return alert('Enter a room code first.');
+
+      isHost = false;
+      roomStatus.textContent = 'Connecting...';
+
+      peer = new Peer();
+
+      peer.on('open', () => {
+        hostConn = peer.connect('chatroom-' + code);
+
+        hostConn.on('open', () => {
+          roomStatus.textContent = `Connected: ${code}`;
+          addSystemMessage(`Joined room ${code}!`);
+          enableChat();
+        });
+
+        hostConn.on('data', (data) => {
+          displayMessage(data.user, data.text);
+        });
+
+        hostConn.on('close', () => {
+          addSystemMessage('Host closed the room.');
+          msgInput.disabled = true;
+          sendBtn.disabled = true;
+          roomStatus.textContent = 'Disconnected';
+        });
+      });
+
+      peer.on('error', (err) => {
+        alert('Could not find room. Check the code and try again.');
+        roomStatus.textContent = 'Offline';
+      });
+    }
+
+    function sendMessage() {
+      const user = document.getElementById('username').value.trim() || 'Anonymous';
+      const text = msgInput.value.trim();
+      if (!text) return;
+
+      const payload = { user, text };
+      displayMessage(user, text);
+      msgInput.value = '';
+
+      if (isHost) {
+        connections.forEach(c => {
+          if (c.open) c.send(payload);
+        });
+      } else if (hostConn && hostConn.open) {
+        hostConn.send(payload);
+      }
+    }
+
+    function enableChat() {
+      msgInput.disabled = false;
+      sendBtn.disabled = false;
+      msgInput.focus();
+    }
+
+    function addSystemMessage(text) {
+      const div = document.createElement('div');
+      div.className = 'system-msg';
+      div.textContent = text;
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function displayMessage(user, text) {
+      const div = document.createElement('div');
+      div.className = 'msg';
+      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      div.innerHTML = `
+        <div class="msg-header">
+          <span class="msg-author">${escapeHTML(user)}</span>
+          <span>${time}</span>
+        </div>
+        <div>${escapeHTML(text)}</div>
+      `;
+
+      chatBox.appendChild(div);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function escapeHTML(str) {
+      return str.replace(/[&<>'"]/g, tag => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      }[tag]));
+    }
+  </script>
+</body>
+</html>

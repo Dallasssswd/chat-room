@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Private Chat Room</title>
-  <script src="https://jsdelivr.net"></script>
+  <script src="https://unpkg.com"></script>
   <style>
     * {
       box-sizing: border-box;
@@ -126,6 +126,14 @@
       font-size: 0.85rem;
       margin: auto 0;
     }
+    .error-msg {
+      text-align: center;
+      color: #f87171;
+      background: rgba(248, 113, 113, 0.1);
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
   </style>
 </head>
 <body>
@@ -133,40 +141,57 @@
   <div class="chat-container">
     <div class="header">
       <h2>Private Chat</h2>
-      <span id="room-status">Not connected</span>
+      <span id="room-status">Checking...</span>
     </div>
 
     <div class="login-bar">
       <input type="text" id="username" placeholder="Your name" maxlength="20" />
       <input type="text" id="room-code" placeholder="Room code (e.g. 1234)" />
-      <button onclick="joinRoom()">Join</button>
+      <button id="join-btn">Join</button>
     </div>
 
     <div id="chat-box">
-      <div class="system-msg">Enter your name and a room code above, then click Join.</div>
+      <div class="system-msg" id="status-box">Starting up...</div>
     </div>
 
     <div class="input-bar">
       <input type="text" id="message-input" placeholder="Type a message..." disabled />
-      <button id="send-btn" onclick="sendMessage()" disabled>Send</button>
+      <button id="send-btn" disabled>Send</button>
     </div>
   </div>
 
   <script>
-    // PASTE YOUR TWO SUPABASE KEYS HERE:
-    const SUPABASE_URL = 'https://zilpqsqwoxoaewadwfpk.supabase.co';
-    const SUPABASE_KEY = 'sb_publishable_FpJe6fT3X_QhPNiCXg6iVQ_sT3VDpuH';
-
-    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-
-    let currentRoom = '';
-    let subscription = null;
-
     const chatBox = document.getElementById('chat-box');
     const msgInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
+    const joinBtn = document.getElementById('join-btn');
     const roomStatus = document.getElementById('room-status');
 
+    // Show any JavaScript errors right on screen
+    window.onerror = function(msg, url, line) {
+      roomStatus.textContent = 'Script Error';
+      chatBox.innerHTML = `<div class="error-msg">Error on line ${line}: ${msg}</div>`;
+    };
+
+    const SUPABASE_URL = 'https://supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_FpJe6fT3X_QhPNiCXg6iVQ_sT3VDpuH';
+
+    let supabaseClient = null;
+    let currentRoom = '';
+    let subscription = null;
+
+    // Check if Supabase library loaded properly
+    if (typeof window.supabase === 'undefined') {
+      roomStatus.textContent = 'Blocked';
+      chatBox.innerHTML = '<div class="error-msg">Your school network blocked unpkg.com (the Supabase script).</div>';
+    } else {
+      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+      roomStatus.textContent = 'Ready';
+      chatBox.innerHTML = '<div class="system-msg">Enter your name and a room code above, then click Join.</div>';
+    }
+
+    joinBtn.addEventListener('click', joinRoom);
+    sendBtn.addEventListener('click', sendMessage);
     document.getElementById('room-code').addEventListener('keypress', (e) => {
       if (e.key === 'Enter') joinRoom();
     });
@@ -175,60 +200,69 @@
     });
 
     async function joinRoom() {
+      if (!supabaseClient) return;
       const roomInput = document.getElementById('room-code').value.trim();
-      if (!roomInput) return alert('Please enter a room code.');
+      if (!roomInput) {
+        alert('Please enter a room code.');
+        return;
+      }
 
       currentRoom = roomInput;
       roomStatus.textContent = 'Connecting...';
       chatBox.innerHTML = '<div class="system-msg">Loading messages...</div>';
 
-      const { data, error } = await supabaseClient
-        .from('messages')
-        .select('*')
-        .eq('room_code', currentRoom)
-        .order('created_at', { ascending: true });
+      try {
+        const { data, error } = await supabaseClient
+          .from('messages')
+          .select('*')
+          .eq('room_code', currentRoom)
+          .order('created_at', { ascending: true });
 
-      if (error) {
-        roomStatus.textContent = 'Error';
-        chatBox.innerHTML = `<div class="system-msg">Error: ${error.message}</div>`;
-        return;
+        if (error) {
+          roomStatus.textContent = 'DB Error';
+          chatBox.innerHTML = `<div class="error-msg">Supabase Error: ${error.message}</div>`;
+          return;
+        }
+
+        chatBox.innerHTML = '';
+        if (data.length === 0) {
+          chatBox.innerHTML = '<div class="system-msg" id="empty-notice">No messages yet. Say hello!</div>';
+        } else {
+          data.forEach(displayMessage);
+        }
+
+        msgInput.disabled = false;
+        sendBtn.disabled = false;
+        roomStatus.textContent = `Room: ${currentRoom}`;
+        msgInput.focus();
+
+        if (subscription) {
+          supabaseClient.removeChannel(subscription);
+        }
+
+        subscription = supabaseClient
+          .channel('room-' + currentRoom)
+          .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'messages',
+            filter: `room_code=eq.${currentRoom}`
+          }, payload => {
+            const emptyNotice = document.getElementById('empty-notice');
+            if (emptyNotice) emptyNotice.remove();
+            displayMessage(payload.new);
+          })
+          .subscribe();
+
+      } catch (err) {
+        roomStatus.textContent = 'Network Error';
+        chatBox.innerHTML = `<div class="error-msg">Network Error: ${err.message} (School Wi-Fi may be blocking supabase.co)</div>`;
       }
-
-      chatBox.innerHTML = '';
-      if (data.length === 0) {
-        chatBox.innerHTML = '<div class="system-msg" id="empty-notice">No messages yet. Say hello!</div>';
-      } else {
-        data.forEach(displayMessage);
-      }
-
-      msgInput.disabled = false;
-      sendBtn.disabled = false;
-      roomStatus.textContent = `Room: ${currentRoom}`;
-      msgInput.focus();
-
-      if (subscription) {
-        supabaseClient.removeChannel(subscription);
-      }
-
-      subscription = supabaseClient
-        .channel('room-' + currentRoom)
-        .on('postgres_changes', {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `room_code=eq.${currentRoom}`
-        }, payload => {
-          const emptyNotice = document.getElementById('empty-notice');
-          if (emptyNotice) emptyNotice.remove();
-          displayMessage(payload.new);
-        })
-        .subscribe();
     }
 
     async function sendMessage() {
       const username = document.getElementById('username').value.trim() || 'Anonymous';
       const content = msgInput.value.trim();
-
       if (!currentRoom || !content) return;
 
       msgInput.value = '';
@@ -242,14 +276,13 @@
         }]);
 
       if (error) {
-        alert('Failed to send message: ' + error.message);
+        chatBox.innerHTML += `<div class="error-msg">Send failed: ${error.message}</div>`;
       }
     }
 
     function displayMessage(msg) {
       const div = document.createElement('div');
       div.className = 'msg';
-
       const time = new Date(msg.created_at).toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit'

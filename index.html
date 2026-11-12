@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>P2P Private Chat</title>
-  <!-- Load PeerJS for direct browser-to-browser chat -->
-  <script src="https://unpkg.com"></script>
+  <title>Private Chat Room</title>
+  <script src="https://jsdelivr.net"></script>
   <style>
     * {
       box-sizing: border-box;
@@ -48,9 +47,8 @@
       font-size: 0.85rem;
       color: #4ade80;
     }
-    .setup-bar {
+    .login-bar {
       display: flex;
-      flex-wrap: wrap;
       gap: 8px;
       padding: 12px;
       background: #252526;
@@ -60,34 +58,29 @@
       background: #2d2d2d;
       border: 1px solid #444;
       color: #fff;
-      padding: 9px;
+      padding: 10px;
       border-radius: 6px;
       outline: none;
-      font-size: 0.9rem;
-      flex: 1;
-      min-width: 110px;
+      font-size: 0.95rem;
     }
     input:focus {
       border-color: #3b82f6;
+    }
+    .login-bar input {
+      flex: 1;
+      min-width: 0;
     }
     button {
       background: #3b82f6;
       color: white;
       border: none;
-      padding: 9px 14px;
+      padding: 10px 16px;
       border-radius: 6px;
       font-weight: 600;
       cursor: pointer;
-      font-size: 0.9rem;
     }
     button:hover {
       background: #2563eb;
-    }
-    button.secondary {
-      background: #10b981;
-    }
-    button.secondary:hover {
-      background: #059669;
     }
     #chat-box {
       flex: 1;
@@ -124,11 +117,14 @@
       background: #252526;
       border-top: 1px solid #333;
     }
+    .input-bar input {
+      flex: 1;
+    }
     .system-msg {
       text-align: center;
       color: #888;
       font-size: 0.85rem;
-      margin: 6px 0;
+      margin: auto 0;
     }
   </style>
 </head>
@@ -136,24 +132,20 @@
 
   <div class="chat-container">
     <div class="header">
-      <h2>P2P Chat Room</h2>
-      <span id="room-status">Offline</span>
+      <h2>Private Chat</h2>
+      <span id="room-status">Not connected</span>
     </div>
 
-    <!-- Setup Controls -->
-    <div class="setup-bar">
+    <div class="login-bar">
       <input type="text" id="username" placeholder="Your name" maxlength="20" />
-      <button class="secondary" onclick="createRoom()">Create Room</button>
-      <input type="text" id="join-code" placeholder="Enter room code" />
+      <input type="text" id="room-code" placeholder="Room code (e.g. 1234)" />
       <button onclick="joinRoom()">Join</button>
     </div>
 
-    <!-- Messages Display -->
     <div id="chat-box">
-      <div class="system-msg">Click "Create Room" to get a code, or enter a friend's code and click "Join".</div>
+      <div class="system-msg">Enter your name and a room code above, then click Join.</div>
     </div>
 
-    <!-- Message Input -->
     <div class="input-bar">
       <input type="text" id="message-input" placeholder="Type a message..." disabled />
       <button id="send-btn" onclick="sendMessage()" disabled>Send</button>
@@ -161,143 +153,114 @@
   </div>
 
   <script>
-    let peer = null;
-    let connections = []; // Stores all connected peers (for the host)
-    let hostConn = null;  // Stores connection to host (for guests)
-    let isHost = false;
+    // PASTE YOUR TWO SUPABASE KEYS HERE:
+    const SUPABASE_URL = 'https://zilpqsqwoxoaewadwfpk.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_FpJe6fT3X_QhPNiCXg6iVQ_sT3VDpuH';
+
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    let currentRoom = '';
+    let subscription = null;
 
     const chatBox = document.getElementById('chat-box');
     const msgInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
     const roomStatus = document.getElementById('room-status');
 
+    document.getElementById('room-code').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') joinRoom();
+    });
     msgInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') sendMessage();
     });
 
-    // Generate a random 6-character room code
-    function makeCode() {
-      return Math.random().toString(36).substring(2, 8).toUpperCase();
-    }
+    async function joinRoom() {
+      const roomInput = document.getElementById('room-code').value.trim();
+      if (!roomInput) return alert('Please enter a room code.');
 
-    // HOST: Create a room
-    function createRoom() {
-      const code = makeCode();
-      isHost = true;
-      roomStatus.textContent = 'Starting...';
-
-      peer = new Peer('chatroom-' + code);
-
-      peer.on('open', () => {
-        roomStatus.textContent = `Room Code: ${code}`;
-        addSystemMessage(`Room created! Share this code with friends: ${code}`);
-        enableChat();
-      });
-
-      // Listen for guests joining
-      peer.on('connection', (conn) => {
-        connections.push(conn);
-        addSystemMessage('Someone joined the room.');
-
-        conn.on('data', (data) => {
-          displayMessage(data.user, data.text);
-          // Relay message to all other connected guests
-          connections.forEach(c => {
-            if (c !== conn && c.open) c.send(data);
-          });
-        });
-
-        conn.on('close', () => {
-          connections = connections.filter(c => c !== conn);
-          addSystemMessage('Someone left the room.');
-        });
-      });
-
-      peer.on('error', (err) => {
-        alert('Connection error: ' + err.type);
-      });
-    }
-
-    // GUEST: Join an existing room
-    function joinRoom() {
-      const code = document.getElementById('join-code').value.trim().toUpperCase();
-      if (!code) return alert('Enter a room code first.');
-
-      isHost = false;
+      currentRoom = roomInput;
       roomStatus.textContent = 'Connecting...';
+      chatBox.innerHTML = '<div class="system-msg">Loading messages...</div>';
 
-      peer = new Peer();
+      const { data, error } = await supabaseClient
+        .from('messages')
+        .select('*')
+        .eq('room_code', currentRoom)
+        .order('created_at', { ascending: true });
 
-      peer.on('open', () => {
-        hostConn = peer.connect('chatroom-' + code);
+      if (error) {
+        roomStatus.textContent = 'Error';
+        chatBox.innerHTML = `<div class="system-msg">Error: ${error.message}</div>`;
+        return;
+      }
 
-        hostConn.on('open', () => {
-          roomStatus.textContent = `Connected: ${code}`;
-          addSystemMessage(`Joined room ${code}!`);
-          enableChat();
-        });
+      chatBox.innerHTML = '';
+      if (data.length === 0) {
+        chatBox.innerHTML = '<div class="system-msg" id="empty-notice">No messages yet. Say hello!</div>';
+      } else {
+        data.forEach(displayMessage);
+      }
 
-        hostConn.on('data', (data) => {
-          displayMessage(data.user, data.text);
-        });
+      msgInput.disabled = false;
+      sendBtn.disabled = false;
+      roomStatus.textContent = `Room: ${currentRoom}`;
+      msgInput.focus();
 
-        hostConn.on('close', () => {
-          addSystemMessage('Host closed the room.');
-          msgInput.disabled = true;
-          sendBtn.disabled = true;
-          roomStatus.textContent = 'Disconnected';
-        });
-      });
+      if (subscription) {
+        supabaseClient.removeChannel(subscription);
+      }
 
-      peer.on('error', (err) => {
-        alert('Could not find room. Check the code and try again.');
-        roomStatus.textContent = 'Offline';
-      });
+      subscription = supabaseClient
+        .channel('room-' + currentRoom)
+        .on('postgres_changes', {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `room_code=eq.${currentRoom}`
+        }, payload => {
+          const emptyNotice = document.getElementById('empty-notice');
+          if (emptyNotice) emptyNotice.remove();
+          displayMessage(payload.new);
+        })
+        .subscribe();
     }
 
-    function sendMessage() {
-      const user = document.getElementById('username').value.trim() || 'Anonymous';
-      const text = msgInput.value.trim();
-      if (!text) return;
+    async function sendMessage() {
+      const username = document.getElementById('username').value.trim() || 'Anonymous';
+      const content = msgInput.value.trim();
 
-      const payload = { user, text };
-      displayMessage(user, text);
+      if (!currentRoom || !content) return;
+
       msgInput.value = '';
 
-      if (isHost) {
-        connections.forEach(c => {
-          if (c.open) c.send(payload);
-        });
-      } else if (hostConn && hostConn.open) {
-        hostConn.send(payload);
+      const { error } = await supabaseClient
+        .from('messages')
+        .insert([{
+          room_code: currentRoom,
+          username: username,
+          content: content
+        }]);
+
+      if (error) {
+        alert('Failed to send message: ' + error.message);
       }
     }
 
-    function enableChat() {
-      msgInput.disabled = false;
-      sendBtn.disabled = false;
-      msgInput.focus();
-    }
-
-    function addSystemMessage(text) {
-      const div = document.createElement('div');
-      div.className = 'system-msg';
-      div.textContent = text;
-      chatBox.appendChild(div);
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    function displayMessage(user, text) {
+    function displayMessage(msg) {
       const div = document.createElement('div');
       div.className = 'msg';
-      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      const time = new Date(msg.created_at).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
 
       div.innerHTML = `
         <div class="msg-header">
-          <span class="msg-author">${escapeHTML(user)}</span>
+          <span class="msg-author">${escapeHTML(msg.username)}</span>
           <span>${time}</span>
         </div>
-        <div>${escapeHTML(text)}</div>
+        <div>${escapeHTML(msg.content)}</div>
       `;
 
       chatBox.appendChild(div);
@@ -306,7 +269,11 @@
 
     function escapeHTML(str) {
       return str.replace(/[&<>'"]/g, tag => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        "'": '&#39;',
+        '"': '&quot;'
       }[tag]));
     }
   </script>
